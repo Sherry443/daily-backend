@@ -427,3 +427,4 @@ server.listen(PORT_NUM, () => {
   console.log(`🔗 Webhook: ${process.env.WEBHOOK_URL || `http://localhost:${PORT_NUM}/webhooks/orders/create`}`);
   console.log(`🌐 Frontend URL: ${FRONTEND_URL}`);
   console.log(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
+});
