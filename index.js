@@ -45,12 +45,34 @@ const http = require("http");
 const server = http.createServer(app);
 
 const io = require("socket.io")(server, {
-  cors: corsOptions,
+  cors: {
+    origin: [FRONTEND_URL, "https://daily-frontend-navy.vercel.app", "http://localhost:3000"],
+    methods: ["GET", "POST"],
+    credentials: true
+  },
   transports: ["websocket", "polling"],
+  allowEIO3: true,
+  pingTimeout: 60000,
+  pingInterval: 25000,
 });
 
 io.on("connection", (socket) => {
   console.log("✅ Client connected:", socket.id);
+  
+  // Send existing orders on connection
+  socket.on("get_orders", async () => {
+    try {
+      const orders = await Order.find()
+        .sort({ created_at: -1 })
+        .limit(100)
+        .populate('handled_by.user_id', 'name email')
+        .lean();
+      socket.emit("orders_list", orders);
+      console.log("📤 Sent orders to client:", socket.id);
+    } catch (error) {
+      console.error("Error fetching orders:", error);
+    }
+  });
   
   socket.on("disconnect", () => {
     console.log("❌ Client disconnected:", socket.id);
@@ -323,6 +345,7 @@ app.patch("/orders/:orderId/status", authenticateToken, asyncHandler(async (req,
   }
 
   io.emit("order_updated", updatedOrder);
+  console.log("✅ Status update broadcasted to", io.engine.clientsCount, "clients");
 
   res.json(updatedOrder);
 }));
@@ -346,9 +369,9 @@ app.post("/webhooks/orders/create", asyncHandler(async (req, res) => {
     
     console.log("✅ Order saved to database");
     
+    // Broadcast to ALL connected clients
     io.emit("new_order", newOrder);
-    
-    console.log("✅ Order broadcasted to frontend\n");
+    console.log("✅ Order broadcasted to", io.engine.clientsCount, "clients");
     
     res.status(200).json({ success: true, message: "Order received" });
   } catch (error) {
