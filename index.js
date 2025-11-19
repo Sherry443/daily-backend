@@ -42,7 +42,9 @@ app.use(bodyParser.urlencoded({ limit: "10mb", extended: true }));
 app.set("trust proxy", 1);
 
 // --- SOCKET.IO SETUP ---
-const server = http.app;
+const http = require("http");
+const server = http.createServer(app);
+
 const io = require("socket.io")(server, {
   cors: corsOptions,
   transports: ["websocket", "polling"],
