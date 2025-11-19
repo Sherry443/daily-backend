@@ -5,7 +5,6 @@ const bodyParser = require("body-parser");
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-const http = require("http").Server;
 
 const app = express();
 
@@ -428,4 +427,3 @@ server.listen(PORT_NUM, () => {
   console.log(`🔗 Webhook: ${process.env.WEBHOOK_URL || `http://localhost:${PORT_NUM}/webhooks/orders/create`}`);
   console.log(`🌐 Frontend URL: ${FRONTEND_URL}`);
   console.log(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
-});
