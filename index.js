@@ -401,41 +401,51 @@ app.get("/orders/:orderId", authenticateToken, asyncHandler(async (req, res) => 
   res.json(order);
 }));
 
-app.patch("/orders/:orderId/status", authenticateToken, asyncHandler(async (req, res) => {
-  const { orderId } = req.params;
-  const { status } = req.body;
+const updateOrderStatus = async (orderId, status) => {
+  try {
+    setUpdatingOrder(orderId);
+    const token = localStorage.getItem('token');
+    
+    console.log('🔄 Updating order:', orderId, 'to status:', status);
+    console.log('🔑 Token exists:', !!token);
+    
+    const response = await fetch(`${BACKEND_URL}/orders/${orderId}/status`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({ status })
+    });
 
-  const validStatuses = ['delivered', 'in_progress', 'cancelled', 'rescheduled', 'pending'];
-  if (!validStatuses.includes(status)) {
-    return res.status(400).json({ error: "Invalid status" });
+    console.log('📡 Response status:', response.status);
+
+    if (response.ok) {
+      const updatedOrder = await response.json();
+      console.log('✅ Order updated successfully:', updatedOrder);
+      setOrders(prevOrders => 
+        prevOrders.map(order => 
+          order._id === updatedOrder._id ? updatedOrder : order
+        )
+      );
+      // Show success message
+      alert(`Order ${updatedOrder.order_number} updated to ${getStatusLabel(status)}`);
+    } else if (response.status === 401) {
+      console.error('❌ Unauthorized - logging out');
+      alert('Session expired. Please login again.');
+      onLogout();
+    } else {
+      const errorData = await response.json();
+      console.error('❌ Error response:', errorData);
+      alert(`Failed to update order: ${errorData.error || 'Unknown error'}`);
+    }
+  } catch (error) {
+    console.error('❌ Error updating order:', error);
+    alert(`Failed to update order status: ${error.message}`);
+  } finally {
+    setUpdatingOrder(null);
   }
-
-  if (!mongoose.Types.ObjectId.isValid(orderId)) {
-    return res.status(400).json({ error: "Invalid order ID" });
-  }
-
-  const updatedOrder = await Order.findByIdAndUpdate(
-    orderId,
-    {
-      status,
-      handled_by: {
-        user_id: req.user.id,
-        name: req.user.name,
-        updated_at: new Date()
-      }
-    },
-    { new: true }
-  ).lean(); // ← Add .lean() to get plain JavaScript object
-
-  if (!updatedOrder) {
-    return res.status(404).json({ error: "Order not found" });
-  }
-
-  // Broadcast via Socket.IO with plain object
-  broadcast('order_updated', updatedOrder);
-
-  res.json(updatedOrder);
-}));
+};
 
 // ============================================
 // WEBHOOK ROUTE - FIXED DUPLICATE ISSUE
