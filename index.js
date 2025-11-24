@@ -425,13 +425,13 @@ app.patch("/orders/:orderId/status", authenticateToken, asyncHandler(async (req,
       }
     },
     { new: true }
-  ).populate('handled_by.user_id', 'name email');
+  ).lean(); // ← Add .lean() to get plain JavaScript object
 
   if (!updatedOrder) {
     return res.status(404).json({ error: "Order not found" });
   }
 
-  // Broadcast via Socket.IO
+  // Broadcast via Socket.IO with plain object
   broadcast('order_updated', updatedOrder);
 
   res.json(updatedOrder);
