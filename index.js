@@ -1,96 +1,128 @@
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
-const bodyParser = require("body-parser");
+const http = require("http");
+const { Server } = require("socket.io");
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 
-const app = express();
+// ============================================
+// CONFIGURATION & VALIDATION
+// ============================================
 
-// --- ENVIRONMENT VARIABLES VALIDATION ---
-const requiredEnvVars = ['JWT_SECRET', 'MONGODB_URI', 'PORT', 'FRONTEND_URL'];
+const config = {
+  JWT_SECRET: process.env.JWT_SECRET || "your-secret-key-change-in-production",
+  PORT: process.env.PORT || 5000,
+  FRONTEND_URL: process.env.FRONTEND_URL || "http://localhost:3000",
+  MONGODB_URI: process.env.MONGODB_URI,
+  NODE_ENV: process.env.NODE_ENV || "development"
+};
+
+// Validate critical environment variables
+const requiredEnvVars = ['MONGODB_URI'];
 const missingVars = requiredEnvVars.filter(v => !process.env[v]);
 
 if (missingVars.length > 0) {
-  console.warn(`⚠️ Warning: Missing environment variables: ${missingVars.join(', ')}`);
-  if (process.env.NODE_ENV === 'production') {
-    console.error('❌ Critical: Cannot start in production without all environment variables');
+  console.error(`❌ Missing required environment variables: ${missingVars.join(', ')}`);
+  if (config.NODE_ENV === 'production') {
     process.exit(1);
   }
 }
 
-const JWT_SECRET = process.env.JWT_SECRET;
-const PORT = process.env.PORT || 5000;
-const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3000";
-const MONGODB_URI = process.env.MONGODB_URI;
+// ============================================
+// EXPRESS APP SETUP
+// ============================================
 
-// --- MIDDLEWARE SETUP ---
-const corsOptions = {
-  origin: [FRONTEND_URL, "https://daily-frontend-navy.vercel.app"],
+const app = express();
+const server = http.createServer(app);
+
+// CORS Configuration
+app.use(cors({
+  origin: [config.FRONTEND_URL, "http://localhost:3000"],
   credentials: true,
   methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"]
-};
+}));
 
-app.use(cors(corsOptions));
-app.use(bodyParser.json({ limit: "10mb" }));
-app.use(bodyParser.urlencoded({ limit: "10mb", extended: true }));
-
-// Trust proxy for Vercel
+app.use(express.json({ limit: "10mb" }));
+app.use(express.urlencoded({ limit: "10mb", extended: true }));
 app.set("trust proxy", 1);
 
-// --- SOCKET.IO SETUP ---
-const http = require("http");
-const server = http.createServer(app);
+// ============================================
+// SOCKET.IO SETUP - IMPROVED
+// ============================================
 
-const io = require("socket.io")(server, {
+const io = new Server(server, {
   cors: {
-    origin: [FRONTEND_URL, "https://daily-frontend-navy.vercel.app", "http://localhost:3000"],
+    origin: [config.FRONTEND_URL, "http://localhost:3000"],
     methods: ["GET", "POST"],
     credentials: true
   },
-  transports: ["websocket", "polling"],
-  allowEIO3: true,
+  transports: ['websocket', 'polling'],
   pingTimeout: 60000,
   pingInterval: 25000,
+  connectTimeout: 45000,
+  allowEIO3: true
 });
 
-io.on("connection", (socket) => {
-  console.log("✅ Client connected:", socket.id);
-  
-  // Send existing orders on connection
-  socket.on("get_orders", async () => {
+let connectedClients = new Set();
+
+io.on('connection', (socket) => {
+  connectedClients.add(socket.id);
+  console.log(`✅ Socket.IO client connected. ID: ${socket.id}. Total: ${connectedClients.size}`);
+
+  // Send welcome message
+  socket.emit('connected', { 
+    message: 'Connected to order server',
+    socketId: socket.id 
+  });
+
+  // Send initial orders when client connects
+  socket.on('get_orders', async () => {
     try {
-      const orders = await Order.find()
+      const orders = await Order.find({})
         .sort({ created_at: -1 })
         .limit(100)
         .populate('handled_by.user_id', 'name email')
         .lean();
-      socket.emit("orders_list", orders);
-      console.log("📤 Sent orders to client:", socket.id);
+      socket.emit('orders_list', orders);
+      console.log(`📦 Sent ${orders.length} orders to client ${socket.id}`);
     } catch (error) {
-      console.error("Error fetching orders:", error);
+      console.error('Error fetching orders:', error);
+      socket.emit('error', { message: 'Failed to fetch orders' });
     }
   });
-  
-  socket.on("disconnect", () => {
-    console.log("❌ Client disconnected:", socket.id);
+
+  // Ping-pong to keep connection alive
+  socket.on('ping', () => {
+    socket.emit('pong');
   });
 
-  socket.on("error", (error) => {
-    console.error("Socket error:", error);
+  socket.on('disconnect', (reason) => {
+    connectedClients.delete(socket.id);
+    console.log(`❌ Socket.IO client disconnected. ID: ${socket.id}. Reason: ${reason}. Total: ${connectedClients.size}`);
+  });
+
+  socket.on('error', (error) => {
+    console.error('Socket.IO error:', error);
   });
 });
 
-// --- MONGODB CONNECTION WITH RETRY LOGIC ---
+// Broadcast function for Socket.IO
+const broadcast = (event, data) => {
+  io.emit(event, data);
+  console.log(`📡 Broadcasted ${event} to ${connectedClients.size} clients`);
+  return connectedClients.size;
+};
+
+// ============================================
+// MONGODB CONNECTION
+// ============================================
+
 const connectDB = async () => {
   try {
-    if (!MONGODB_URI) {
-      throw new Error("MONGODB_URI is not defined");
-    }
-    
-    await mongoose.connect(MONGODB_URI, {
+    await mongoose.connect(config.MONGODB_URI, {
       useNewUrlParser: true,
       useUnifiedTopology: true,
       maxPoolSize: 10,
@@ -100,31 +132,47 @@ const connectDB = async () => {
     console.log("✅ MongoDB Connected");
   } catch (err) {
     console.error("❌ MongoDB Connection Error:", err.message);
-    // Retry connection after 5 seconds
     setTimeout(connectDB, 5000);
   }
 };
 
-// Handle MongoDB connection events
 mongoose.connection.on('disconnected', () => {
-  console.warn("⚠️ MongoDB disconnected, attempting to reconnect...");
+  console.warn("⚠️ MongoDB disconnected");
+});
+
+mongoose.connection.on('error', (err) => {
+  console.error("❌ MongoDB error:", err);
 });
 
 connectDB();
 
-// --- USER SCHEMA ---
+// ============================================
+// MONGOOSE SCHEMAS
+// ============================================
+
 const userSchema = new mongoose.Schema({
-  name: { type: String, required: true },
-  email: { type: String, unique: true, required: true, lowercase: true, trim: true },
+  name: { type: String, required: true, trim: true },
+  email: { 
+    type: String, 
+    unique: true, 
+    required: true, 
+    lowercase: true, 
+    trim: true,
+    index: true 
+  },
   password: { type: String, required: true }
-}, { timestamps: true });
+}, { 
+  timestamps: true 
+});
 
-const User = mongoose.model("User", userSchema);
-
-// --- ORDER SCHEMA ---
 const orderSchema = new mongoose.Schema({
-  shopify_order_id: { type: String, unique: true, required: true },
-  order_number: String,
+  shopify_order_id: { 
+    type: String, 
+    unique: true, 
+    required: true,
+    index: true 
+  },
+  order_number: { type: String, required: true },
   customer_full_name: String,
   customer_phone: String,
   full_address: String,
@@ -134,26 +182,32 @@ const orderSchema = new mongoose.Schema({
     price: String
   }],
   total: String,
-  created_at: Date,
+  created_at: { type: Date, default: Date.now },
   status: { 
     type: String, 
     enum: ['delivered', 'in_progress', 'cancelled', 'rescheduled', 'pending'],
-    default: 'pending'
+    default: 'pending',
+    index: true
   },
   handled_by: {
     user_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     name: String,
     updated_at: Date
   }
-}, { timestamps: true });
+}, { 
+  timestamps: true 
+});
 
-// Create compound index for better performance
 orderSchema.index({ created_at: -1, status: 1 });
-orderSchema.index({ shopify_order_id: 1 });
+orderSchema.index({ status: 1, created_at: -1 });
 
+const User = mongoose.model("User", userSchema);
 const Order = mongoose.model("Order", orderSchema);
 
-// --- AUTHENTICATION MIDDLEWARE ---
+// ============================================
+// MIDDLEWARE
+// ============================================
+
 const authenticateToken = (req, res, next) => {
   try {
     const authHeader = req.headers['authorization'];
@@ -163,7 +217,7 @@ const authenticateToken = (req, res, next) => {
       return res.status(401).json({ error: "Access denied. No token provided." });
     }
 
-    const verified = jwt.verify(token, JWT_SECRET);
+    const verified = jwt.verify(token, config.JWT_SECRET);
     req.user = verified;
     next();
   } catch (error) {
@@ -172,96 +226,19 @@ const authenticateToken = (req, res, next) => {
   }
 };
 
-// --- ERROR HANDLING MIDDLEWARE ---
 const asyncHandler = (fn) => (req, res, next) => {
   Promise.resolve(fn(req, res, next)).catch(next);
 };
 
-// --- AUTHENTICATION ROUTES ---
+app.use((req, res, next) => {
+  console.log(`${req.method} ${req.path}`);
+  next();
+});
 
-app.post("/auth/register", asyncHandler(async (req, res) => {
-  const { name, email, password } = req.body;
+// ============================================
+// HELPER FUNCTIONS
+// ============================================
 
-  if (!name || !email || !password) {
-    return res.status(400).json({ error: "All fields are required" });
-  }
-
-  if (password.length < 6) {
-    return res.status(400).json({ error: "Password must be at least 6 characters" });
-  }
-
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    return res.status(400).json({ error: "Invalid email format" });
-  }
-
-  const existingUser = await User.findOne({ email: email.toLowerCase() });
-  if (existingUser) {
-    return res.status(400).json({ error: "Email already registered" });
-  }
-
-  const salt = await bcrypt.genSalt(10);
-  const hashedPassword = await bcrypt.hash(password, salt);
-
-  const user = new User({
-    name: name.trim(),
-    email: email.toLowerCase(),
-    password: hashedPassword
-  });
-
-  await user.save();
-
-  const token = jwt.sign(
-    { id: user._id, email: user.email, name: user.name },
-    JWT_SECRET,
-    { expiresIn: '7d' }
-  );
-
-  res.status(201).json({
-    message: "User registered successfully",
-    token,
-    user: { id: user._id, name: user.name, email: user.email }
-  });
-}));
-
-app.post("/auth/login", asyncHandler(async (req, res) => {
-  const { email, password } = req.body;
-
-  if (!email || !password) {
-    return res.status(400).json({ error: "Email and password are required" });
-  }
-
-  const user = await User.findOne({ email: email.toLowerCase() });
-  if (!user) {
-    return res.status(400).json({ error: "Invalid email or password" });
-  }
-
-  const validPassword = await bcrypt.compare(password, user.password);
-  if (!validPassword) {
-    return res.status(400).json({ error: "Invalid email or password" });
-  }
-
-  const token = jwt.sign(
-    { id: user._id, email: user.email, name: user.name },
-    JWT_SECRET,
-    { expiresIn: '7d' }
-  );
-
-  res.json({
-    message: "Login successful",
-    token,
-    user: { id: user._id, name: user.name, email: user.email }
-  });
-}));
-
-app.get("/auth/me", authenticateToken, asyncHandler(async (req, res) => {
-  const user = await User.findById(req.user.id).select('-password');
-  if (!user) {
-    return res.status(404).json({ error: "User not found" });
-  }
-  res.json(user);
-}));
-
-// --- HELPER FUNCTION ---
 const formatOrder = (order) => {
   const billing = order.billing_address || {};
   const shipping = order.shipping_address || {};
@@ -302,16 +279,126 @@ const formatOrder = (order) => {
   };
 };
 
-// --- ORDER ROUTES ---
+// ============================================
+// AUTHENTICATION ROUTES
+// ============================================
+
+app.post("/auth/register", asyncHandler(async (req, res) => {
+  const { name, email, password } = req.body;
+
+  if (!name || !email || !password) {
+    return res.status(400).json({ error: "All fields are required" });
+  }
+
+  if (password.length < 6) {
+    return res.status(400).json({ error: "Password must be at least 6 characters" });
+  }
+
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return res.status(400).json({ error: "Invalid email format" });
+  }
+
+  const existingUser = await User.findOne({ email: email.toLowerCase() });
+  if (existingUser) {
+    return res.status(400).json({ error: "Email already registered" });
+  }
+
+  const salt = await bcrypt.genSalt(10);
+  const hashedPassword = await bcrypt.hash(password, salt);
+
+  const user = new User({
+    name: name.trim(),
+    email: email.toLowerCase(),
+    password: hashedPassword
+  });
+
+  await user.save();
+
+  const token = jwt.sign(
+    { id: user._id, email: user.email, name: user.name },
+    config.JWT_SECRET,
+    { expiresIn: '7d' }
+  );
+
+  res.status(201).json({
+    message: "User registered successfully",
+    token,
+    user: { id: user._id, name: user.name, email: user.email }
+  });
+}));
+
+app.post("/auth/login", asyncHandler(async (req, res) => {
+  const { email, password } = req.body;
+
+  if (!email || !password) {
+    return res.status(400).json({ error: "Email and password are required" });
+  }
+
+  const user = await User.findOne({ email: email.toLowerCase() });
+  if (!user) {
+    return res.status(400).json({ error: "Invalid email or password" });
+  }
+
+  const validPassword = await bcrypt.compare(password, user.password);
+  if (!validPassword) {
+    return res.status(400).json({ error: "Invalid email or password" });
+  }
+
+  const token = jwt.sign(
+    { id: user._id, email: user.email, name: user.name },
+    config.JWT_SECRET,
+    { expiresIn: '7d' }
+  );
+
+  res.json({
+    message: "Login successful",
+    token,
+    user: { id: user._id, name: user.name, email: user.email }
+  });
+}));
+
+app.get("/auth/me", authenticateToken, asyncHandler(async (req, res) => {
+  const user = await User.findById(req.user.id).select('-password');
+  if (!user) {
+    return res.status(404).json({ error: "User not found" });
+  }
+  res.json(user);
+}));
+
+// ============================================
+// ORDER ROUTES
+// ============================================
 
 app.get("/orders", authenticateToken, asyncHandler(async (req, res) => {
-  const orders = await Order.find()
+  const { status, limit = 100, skip = 0 } = req.query;
+  
+  const query = status && status !== 'all' ? { status } : {};
+  
+  const orders = await Order.find(query)
     .sort({ created_at: -1 })
-    .limit(100)
+    .limit(parseInt(limit))
+    .skip(parseInt(skip))
     .populate('handled_by.user_id', 'name email')
     .lean();
   
   res.json(orders);
+}));
+
+app.get("/orders/:orderId", authenticateToken, asyncHandler(async (req, res) => {
+  const { orderId } = req.params;
+
+  if (!mongoose.Types.ObjectId.isValid(orderId)) {
+    return res.status(400).json({ error: "Invalid order ID" });
+  }
+
+  const order = await Order.findById(orderId)
+    .populate('handled_by.user_id', 'name email');
+
+  if (!order) {
+    return res.status(404).json({ error: "Order not found" });
+  }
+
+  res.json(order);
 }));
 
 app.patch("/orders/:orderId/status", authenticateToken, asyncHandler(async (req, res) => {
@@ -344,52 +431,130 @@ app.patch("/orders/:orderId/status", authenticateToken, asyncHandler(async (req,
     return res.status(404).json({ error: "Order not found" });
   }
 
-  io.emit("order_updated", updatedOrder);
-  console.log("✅ Status update broadcasted to", io.engine.clientsCount, "clients");
+  // Broadcast via Socket.IO
+  broadcast('order_updated', updatedOrder);
 
   res.json(updatedOrder);
 }));
 
-// --- WEBHOOK ROUTE ---
+// ============================================
+// WEBHOOK ROUTE - FIXED DUPLICATE ISSUE
+// ============================================
 
 app.post("/webhooks/orders/create", asyncHandler(async (req, res) => {
+  const order = req.body;
+  
+  if (!order.id || !order.order_number) {
+    return res.status(400).json({ error: "Invalid order data" });
+  }
+  
+  console.log("🔔 NEW ORDER WEBHOOK:", order.order_number);
+  
   try {
-    const order = req.body;
+    const shopifyOrderId = order.id.toString();
     
-    if (!order.id || !order.order_number) {
-      return res.status(400).json({ error: "Invalid order data" });
+    // Check if order already exists
+    const existingOrder = await Order.findOne({ shopify_order_id: shopifyOrderId });
+    
+    if (existingOrder) {
+      console.log("⚠️ Order already exists in database, skipping:", order.order_number);
+      return res.status(200).json({ 
+        success: true, 
+        message: "Order already exists",
+        duplicate: true
+      });
     }
     
-    console.log("🔔 NEW ORDER RECEIVED:", order.order_number);
-    
+    // Format and save new order
     const formattedOrder = formatOrder(order);
     const newOrder = new Order(formattedOrder);
     
     await newOrder.save();
+    console.log("✅ New order saved to database:", newOrder.order_number);
     
-    console.log("✅ Order saved to database");
+    // Broadcast to all connected Socket.IO clients
+    const clientCount = broadcast('new_order', newOrder);
+    console.log(`📡 Broadcasted new order to ${clientCount} clients`);
     
-    // Broadcast to ALL connected clients
-    io.emit("new_order", newOrder);
-    console.log("✅ Order broadcasted to", io.engine.clientsCount, "clients");
+    res.status(200).json({ 
+      success: true, 
+      message: "Order received and broadcasted",
+      clients: clientCount,
+      order_id: newOrder._id
+    });
     
-    res.status(200).json({ success: true, message: "Order received" });
   } catch (error) {
+    console.error("❌ Error processing webhook:", error);
+    
+    // Handle duplicate key error (in case of race condition)
     if (error.code === 11000) {
-      console.log("⚠️ Duplicate order, skipping...");
-      return res.status(200).json({ success: true, message: "Duplicate" });
+      console.log("⚠️ Duplicate order detected (race condition)");
+      return res.status(200).json({ 
+        success: true, 
+        message: "Duplicate order",
+        duplicate: true
+      });
     }
+    
     throw error;
   }
 }));
 
-// --- HEALTH CHECK ---
+// ============================================
+// DEBUG ROUTE - Test webhook manually
+// ============================================
+
+app.post("/test/webhook", asyncHandler(async (req, res) => {
+  // Sample test order
+  const testOrder = {
+    id: Date.now(),
+    order_number: Math.floor(Math.random() * 10000),
+    billing_address: {
+      first_name: "Test",
+      last_name: "Customer",
+      phone: "03001234567",
+      address1: "123 Test Street",
+      city: "Lahore",
+      province: "Punjab",
+      country: "Pakistan"
+    },
+    line_items: [
+      {
+        title: "Test Product",
+        quantity: 2,
+        price: "1000"
+      }
+    ],
+    total_price: "2000",
+    created_at: new Date().toISOString()
+  };
+
+  const formattedOrder = formatOrder(testOrder);
+  const newOrder = new Order(formattedOrder);
+  
+  await newOrder.save();
+  
+  // Broadcast
+  broadcast('new_order', newOrder);
+  
+  res.json({ 
+    success: true, 
+    message: "Test order created and broadcasted",
+    order: newOrder 
+  });
+}));
+
+// ============================================
+// HEALTH CHECK ROUTES
+// ============================================
 
 app.get("/", (req, res) => {
   res.json({ 
     status: "Server is running! 🚀",
     timestamp: new Date().toISOString(),
-    mongodb: mongoose.connection.readyState === 1 ? "Connected" : "Disconnected"
+    mongodb: mongoose.connection.readyState === 1 ? "Connected" : "Disconnected",
+    socketio_clients: connectedClients.size,
+    environment: config.NODE_ENV
   });
 });
 
@@ -398,17 +563,21 @@ app.get("/health", (req, res) => {
     status: "OK",
     timestamp: new Date().toISOString(),
     mongodb: mongoose.connection.readyState === 1 ? "Connected" : "Disconnected",
-    uptime: process.uptime()
+    socketio_clients: connectedClients.size,
+    uptime: process.uptime(),
+    memory: process.memoryUsage()
   };
   res.json(health);
 });
 
-// --- 404 HANDLER ---
+// ============================================
+// ERROR HANDLING
+// ============================================
+
 app.use((req, res) => {
   res.status(404).json({ error: "Route not found" });
 });
 
-// --- GLOBAL ERROR HANDLER ---
 app.use((err, req, res, next) => {
   console.error("❌ Error:", err);
   
@@ -419,35 +588,61 @@ app.use((err, req, res, next) => {
   if (err.name === 'CastError') {
     return res.status(400).json({ error: "Invalid ID format" });
   }
+
+  if (err.name === 'JsonWebTokenError') {
+    return res.status(401).json({ error: "Invalid token" });
+  }
   
-  res.status(500).json({ error: "Internal server error" });
-});
-
-// --- GRACEFUL SHUTDOWN ---
-process.on('SIGTERM', () => {
-  console.log('SIGTERM signal received: closing HTTP server');
-  server.close(() => {
-    console.log('HTTP server closed');
-    mongoose.connection.close();
-    process.exit(0);
+  res.status(500).json({ 
+    error: config.NODE_ENV === 'production' 
+      ? "Internal server error" 
+      : err.message 
   });
 });
 
-process.on('SIGINT', () => {
-  console.log('SIGINT signal received: closing HTTP server');
+// ============================================
+// GRACEFUL SHUTDOWN
+// ============================================
+
+const gracefulShutdown = async (signal) => {
+  console.log(`\n${signal} signal received: closing server gracefully`);
+  
+  io.close(() => {
+    console.log('Socket.IO server closed');
+  });
+  
   server.close(() => {
     console.log('HTTP server closed');
-    mongoose.connection.close();
-    process.exit(0);
+    
+    mongoose.connection.close(false, () => {
+      console.log('MongoDB connection closed');
+      process.exit(0);
+    });
   });
-});
+  
+  setTimeout(() => {
+    console.error('Could not close connections in time, forcefully shutting down');
+    process.exit(1);
+  }, 10000);
+};
 
-// --- START SERVER ---
-const PORT_NUM = parseInt(PORT, 10) || 5000;
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+// ============================================
+// START SERVER
+// ============================================
+
+const PORT_NUM = parseInt(config.PORT, 10);
+
 server.listen(PORT_NUM, () => {
+  console.log('\n' + '='.repeat(60));
   console.log(`🚀 Server running on port ${PORT_NUM}`);
-  console.log(`📡 WebSocket ready`);
-  console.log(`🔗 Webhook: ${process.env.WEBHOOK_URL || `http://localhost:${PORT_NUM}/webhooks/orders/create`}`);
-  console.log(`🌐 Frontend URL: ${FRONTEND_URL}`);
-  console.log(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`📡 Socket.IO server ready`);
+  console.log(`🔗 Webhook endpoint: http://localhost:${PORT_NUM}/webhooks/orders/create`);
+  console.log(`🧪 Test endpoint: http://localhost:${PORT_NUM}/test/webhook`);
+  console.log(`🌐 Frontend URL: ${config.FRONTEND_URL}`);
+  console.log(`📊 Environment: ${config.NODE_ENV}`);
+  console.log(`🔌 Connected Socket.IO clients: ${connectedClients.size}`);
+  console.log('='.repeat(60) + '\n');
 });
