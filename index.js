@@ -39,7 +39,7 @@ const server = http.createServer(app);
 
 // CORS Configuration
 app.use(cors({
-  origin: [config.FRONTEND_URL],
+  origin: [config.FRONTEND_URL, "http://localhost:3000"],
   credentials: true,
   methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"]
@@ -55,7 +55,7 @@ app.set("trust proxy", 1);
 
 const io = new Server(server, {
   cors: {
-    origin: [config.FRONTEND_URL],
+    origin: [config.FRONTEND_URL, "http://localhost:3000"],
     methods: ["GET", "POST"],
     credentials: true
   },
