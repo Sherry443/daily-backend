@@ -12,9 +12,9 @@ const jwt = require("jsonwebtoken");
 // ============================================
 
 const config = {
-  JWT_SECRET: process.env.JWT_SECRET || "your-secret-key-change-in-production",
+  JWT_SECRET: process.env.JWT_SECRET,
   PORT: process.env.PORT || 5000,
-  FRONTEND_URL: process.env.FRONTEND_URL || "http://localhost:3000",
+  FRONTEND_URL: process.env.FRONTEND_URL,
   MONGODB_URI: process.env.MONGODB_URI,
   NODE_ENV: process.env.NODE_ENV || "development"
 };
@@ -39,7 +39,7 @@ const server = http.createServer(app);
 
 // CORS Configuration
 app.use(cors({
-  origin: [config.FRONTEND_URL, "http://localhost:3000"],
+  origin: [config.FRONTEND_URL],
   credentials: true,
   methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"]
@@ -55,7 +55,7 @@ app.set("trust proxy", 1);
 
 const io = new Server(server, {
   cors: {
-    origin: [config.FRONTEND_URL, "http://localhost:3000"],
+    origin: [config.FRONTEND_URL],
     methods: ["GET", "POST"],
     credentials: true
   },
@@ -401,16 +401,56 @@ app.get("/orders/:orderId", authenticateToken, asyncHandler(async (req, res) => 
   res.json(order);
 }));
 
-// ============================================
-// ORDER STATUS UPDATE ROUTE - FIXED!
-// ============================================
+const updateOrderStatus = async (orderId, status) => {
+  try {
+    setUpdatingOrder(orderId);
+    const token = localStorage.getItem('token');
+    
+    console.log('🔄 Updating order:', orderId, 'to status:', status);
+    console.log('🔑 Token exists:', !!token);
+    
+    const response = await fetch(`${BACKEND_URL}/orders/${orderId}/status`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({ status })
+    });
 
+    console.log('📡 Response status:', response.status);
+
+    if (response.ok) {
+      const updatedOrder = await response.json();
+      console.log('✅ Order updated successfully:', updatedOrder);
+      setOrders(prevOrders => 
+        prevOrders.map(order => 
+          order._id === updatedOrder._id ? updatedOrder : order
+        )
+      );
+      // Show success message
+      alert(`Order ${updatedOrder.order_number} updated to ${getStatusLabel(status)}`);
+    } else if (response.status === 401) {
+      console.error('❌ Unauthorized - logging out');
+      alert('Session expired. Please login again.');
+      onLogout();
+    } else {
+      const errorData = await response.json();
+      console.error('❌ Error response:', errorData);
+      alert(`Failed to update order: ${errorData.error || 'Unknown error'}`);
+    }
+  } catch (error) {
+    console.error('❌ Error updating order:', error);
+    alert(`Failed to update order status: ${error.message}`);
+  } finally {
+    setUpdatingOrder(null);
+  }
+};
 app.patch("/orders/:orderId/status", authenticateToken, asyncHandler(async (req, res) => {
   const { orderId } = req.params;
   const { status } = req.body;
 
   console.log(`🔄 Updating order ${orderId} to status: ${status}`);
-  console.log(`👤 Requested by user: ${req.user.name} (${req.user.id})`);
 
   // Validate orderId
   if (!mongoose.Types.ObjectId.isValid(orderId)) {
@@ -452,7 +492,6 @@ app.patch("/orders/:orderId/status", authenticateToken, asyncHandler(async (req,
 
   res.json(order);
 }));
-
 // ============================================
 // WEBHOOK ROUTE - FIXED DUPLICATE ISSUE
 // ============================================
