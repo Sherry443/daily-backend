@@ -544,7 +544,7 @@ app.get("/dashboard/stats", authenticateToken, asyncHandler(async (req, res) => 
   });
 }));
 // GET /dashboard/user-detailed-stats/:userId
-router.get('/dashboard/user-detailed-stats/:userId', authenticate, async (req, res) => {
+app.get('/dashboard/user-detailed-stats/:userId', authenticate, async (req, res) => {
   try {
     const { userId } = req.params;
     const { startDate, endDate, timeframe } = req.query;
