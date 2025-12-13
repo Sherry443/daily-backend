@@ -601,21 +601,40 @@ app.get("/dashboard/user-stats", authenticateToken, asyncHandler(async (req, res
   });
 }));
 // GET /dashboard/user-detailed-stats/:userId
-app.get('/dashboard/user-detailed-stats/:userId', authenticate, async (req, res) => {
+// GET /dashboard/user-detailed-stats/:userId
+app.get('/dashboard/user-detailed-stats/:userId', authenticateToken, asyncHandler(async (req, res) => {
   try {
     const { userId } = req.params;
     const { startDate, endDate, timeframe } = req.query;
     
+    // Validate userId
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ error: "Invalid user ID" });
+    }
+    
     // Build date filter
-    let dateFilter = { assigned_to: userId };
+    let dateFilter = { 'handled_by.user_id': new mongoose.Types.ObjectId(userId) };
+    
     if (startDate || endDate) {
-      dateFilter.created_at = {};
-      if (startDate) dateFilter.created_at.$gte = new Date(startDate);
-      if (endDate) dateFilter.created_at.$lte = new Date(endDate);
+      dateFilter['handled_by.updated_at'] = {};
+      if (startDate) {
+        const start = new Date(startDate);
+        start.setHours(0, 0, 0, 0);
+        dateFilter['handled_by.updated_at'].$gte = start;
+      }
+      if (endDate) {
+        const end = new Date(endDate);
+        end.setHours(23, 59, 59, 999);
+        dateFilter['handled_by.updated_at'].$lte = end;
+      }
     }
     
     // Get user name
     const user = await User.findById(userId);
+    
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
     
     // Summary stats
     const summary = {
@@ -632,7 +651,7 @@ app.get('/dashboard/user-detailed-stats/:userId', authenticate, async (req, res)
       { $match: dateFilter },
       {
         $group: {
-          _id: { $dateToString: { format: "%Y-%m-%d", date: "$created_at" } },
+          _id: { $dateToString: { format: "%Y-%m-%d", date: "$handled_by.updated_at" } },
           total: { $sum: 1 },
           pending: { $sum: { $cond: [{ $eq: ["$status", "pending"] }, 1, 0] } },
           in_progress: { $sum: { $cond: [{ $eq: ["$status", "in_progress"] }, 1, 0] } },
@@ -646,9 +665,10 @@ app.get('/dashboard/user-detailed-stats/:userId', authenticate, async (req, res)
     
     // Recent orders
     const recentOrders = await Order.find(dateFilter)
-      .sort({ created_at: -1 })
+      .sort({ 'handled_by.updated_at': -1 })
       .limit(20)
-      .select('order_number customer_full_name total status created_at');
+      .select('order_number customer_full_name total status created_at')
+      .lean();
     
     res.json({
       userName: user.name,
@@ -659,9 +679,9 @@ app.get('/dashboard/user-detailed-stats/:userId', authenticate, async (req, res)
     
   } catch (error) {
     console.error('Error fetching user detailed stats:', error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ error: 'Server error' });
   }
-});
+}));
 // Get user's handled orders with advanced filtering
 app.get("/user/my-orders", authenticateToken, asyncHandler(async (req, res) => {
   const userId = req.user.id;
