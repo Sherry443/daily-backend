@@ -187,7 +187,7 @@ mongoose.connection.on('error', (err) => {
 });
 
 connectDB();
-createAdminUser();
+// createAdminUser();
 
 // ============================================
 // MONGOOSE SCHEMAS
@@ -259,7 +259,7 @@ orderSchema.index({ status: 1, created_at: -1 });
 
 const User = mongoose.model("User", userSchema);
 const Order = mongoose.model("Order", orderSchema);
-
+createAdminUser();
 // ============================================
 // MIDDLEWARE
 // ============================================
