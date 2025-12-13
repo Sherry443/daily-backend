@@ -543,7 +543,68 @@ app.get("/dashboard/stats", authenticateToken, asyncHandler(async (req, res) => 
     topHandlers
   });
 }));
-
+// GET /dashboard/user-detailed-stats/:userId
+router.get('/dashboard/user-detailed-stats/:userId', authenticate, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { startDate, endDate, timeframe } = req.query;
+    
+    // Build date filter
+    let dateFilter = { assigned_to: userId };
+    if (startDate || endDate) {
+      dateFilter.created_at = {};
+      if (startDate) dateFilter.created_at.$gte = new Date(startDate);
+      if (endDate) dateFilter.created_at.$lte = new Date(endDate);
+    }
+    
+    // Get user name
+    const user = await User.findById(userId);
+    
+    // Summary stats
+    const summary = {
+      total: await Order.countDocuments(dateFilter),
+      pending: await Order.countDocuments({ ...dateFilter, status: 'pending' }),
+      in_progress: await Order.countDocuments({ ...dateFilter, status: 'in_progress' }),
+      delivered: await Order.countDocuments({ ...dateFilter, status: 'delivered' }),
+      cancelled: await Order.countDocuments({ ...dateFilter, status: 'cancelled' }),
+      rescheduled: await Order.countDocuments({ ...dateFilter, status: 'rescheduled' })
+    };
+    
+    // Daily breakdown
+    const dailyBreakdown = await Order.aggregate([
+      { $match: dateFilter },
+      {
+        $group: {
+          _id: { $dateToString: { format: "%Y-%m-%d", date: "$created_at" } },
+          total: { $sum: 1 },
+          pending: { $sum: { $cond: [{ $eq: ["$status", "pending"] }, 1, 0] } },
+          in_progress: { $sum: { $cond: [{ $eq: ["$status", "in_progress"] }, 1, 0] } },
+          delivered: { $sum: { $cond: [{ $eq: ["$status", "delivered"] }, 1, 0] } },
+          cancelled: { $sum: { $cond: [{ $eq: ["$status", "cancelled"] }, 1, 0] } },
+          rescheduled: { $sum: { $cond: [{ $eq: ["$status", "rescheduled"] }, 1, 0] } }
+        }
+      },
+      { $sort: { _id: 1 } }
+    ]);
+    
+    // Recent orders
+    const recentOrders = await Order.find(dateFilter)
+      .sort({ created_at: -1 })
+      .limit(20)
+      .select('order_number customer_full_name total status created_at');
+    
+    res.json({
+      userName: user.name,
+      summary,
+      dailyBreakdown,
+      recentOrders
+    });
+    
+  } catch (error) {
+    console.error('Error fetching user detailed stats:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
 // Get user-specific dashboard statistics
 // Get user-specific dashboard statistics
 app.get("/dashboard/user-stats", authenticateToken, asyncHandler(async (req, res) => {
