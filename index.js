@@ -423,6 +423,7 @@ app.patch("/products/:productId/inventory", authenticateToken, asyncHandler(asyn
 }));
 
 // Shopify Products Webhook - Sync inventory
+// Shopify Products Webhook - Sync inventory
 app.post("/webhooks/products/update", asyncHandler(async (req, res) => {
   const shopifyProduct = req.body;
   
@@ -445,11 +446,16 @@ app.post("/webhooks/products/update", asyncHandler(async (req, res) => {
     
     const totalInventory = variants.reduce((sum, v) => sum + (v.inventory_quantity || 0), 0);
     
+    // Get the price from the first variant or calculate average/min price
+    const firstVariantPrice = shopifyProduct.variants?.[0]?.price || 0;
+    
     const productData = {
       shopify_product_id: productId,
       title: shopifyProduct.title,
       variants: variants,
       total_inventory: totalInventory,
+      price: firstVariantPrice, // Add this line - store numeric price
+      formatted_price: `Rs ${Number(firstVariantPrice).toLocaleString("en-PK")}`, // Add formatted version
       image_url: shopifyProduct.image?.src || shopifyProduct.images?.[0]?.src,
       product_type: shopifyProduct.product_type,
       vendor: shopifyProduct.vendor,
