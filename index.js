@@ -316,6 +316,8 @@ const productSchema = new mongoose.Schema({
     price: String
   }],
   total_inventory: { type: Number, default: 0 },
+  price: { type: Number, default: 0 },              // ADD THIS LINE
+  formatted_price: { type: String },                 // ADD THIS LINE
   image_url: String,
   product_type: String,
   vendor: String,
