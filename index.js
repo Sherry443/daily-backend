@@ -101,7 +101,7 @@ io.on('connection', (socket) => {
     try {
       const orders = await Order.find({})
         .sort({ created_at: -1 })
-        .limit(100)
+        .limit(1000)
         .populate('handled_by.user_id', 'name email')
         .lean();
       socket.emit('orders_list', orders);
@@ -147,6 +147,7 @@ const createAdminUser = async () => {
         email: adminEmail,
         password: hashedPassword,
         isAdmin: true
+
       });
       
       await admin.save();
@@ -237,7 +238,7 @@ const orderSchema = new mongoose.Schema({
   handled_by: {
     user_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     name: String,
-    updated_at: Date
+    updated_at: { type: Date, default: Date.now }
   },
   // NEW FIELDS FOR ADMIN APPROVAL
   admin_approval: {
@@ -247,7 +248,7 @@ const orderSchema = new mongoose.Schema({
       default: 'pending'
     },
     approved_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-    approved_at: Date,
+    approved_at: { type: Date, default: Date.now },
     denial_reason: String
   }
 }, { 
@@ -1022,7 +1023,7 @@ app.get("/auth/me", authenticateToken, asyncHandler(async (req, res) => {
 // ============================================
 
 app.get("/orders", authenticateToken, asyncHandler(async (req, res) => {
-  const { status, limit = 100, skip = 0 } = req.query;
+  const { status, limit = 1000, skip = 0 } = req.query;
   
   const query = status && status !== 'all' ? { status } : {};
   
