@@ -495,8 +495,14 @@ app.get("/dashboard/stats", authenticateToken, asyncHandler(async (req, res) => 
   let dateFilter = {};
   if (startDate || endDate) {
     dateFilter.created_at = {};
-    if (startDate) dateFilter.created_at.$gte = new Date(startDate);
-    if (endDate) dateFilter.created_at.$lte = new Date(endDate);
+    if (startDate) {
+      // Parse ISO string directly (already in UTC from frontend)
+      dateFilter.created_at.$gte = new Date(startDate);
+    }
+    if (endDate) {
+      // Parse ISO string directly (already in UTC from frontend)
+      dateFilter.created_at.$lte = new Date(endDate);
+    }
   }
   
   // Count orders by status
@@ -561,8 +567,12 @@ app.get("/dashboard/user-stats", authenticateToken, asyncHandler(async (req, res
   let dateFilter = { 'handled_by.user_id': new mongoose.Types.ObjectId(userId) };
   if (startDate || endDate) {
     dateFilter['handled_by.updated_at'] = {};
-    if (startDate) dateFilter['handled_by.updated_at'].$gte = new Date(startDate);
-    if (endDate) dateFilter['handled_by.updated_at'].$lte = new Date(endDate);
+    if (startDate) {
+      dateFilter['handled_by.updated_at'].$gte = new Date(startDate);
+    }
+    if (endDate) {
+      dateFilter['handled_by.updated_at'].$lte = new Date(endDate);
+    }
   }
   
   // Count user's handled orders by status
@@ -626,14 +636,10 @@ app.get('/dashboard/user-detailed-stats/:userId', authenticateToken, asyncHandle
     if (startDate || endDate) {
       dateFilter['handled_by.updated_at'] = {};
       if (startDate) {
-        const start = new Date(startDate);
-        start.setHours(0, 0, 0, 0);
-        dateFilter['handled_by.updated_at'].$gte = start;
+        dateFilter['handled_by.updated_at'].$gte = new Date(startDate);
       }
       if (endDate) {
-        const end = new Date(endDate);
-        end.setHours(23, 59, 59, 999);
-        dateFilter['handled_by.updated_at'].$lte = end;
+        dateFilter['handled_by.updated_at'].$lte = new Date(endDate);
       }
     }
     
@@ -1427,27 +1433,22 @@ app.get("/admin/dashboard/stats", authenticateToken, requireAdmin, asyncHandler(
   // Single date filter
   if (date) {
     const startOfDay = new Date(date);
-    startOfDay.setHours(0, 0, 0, 0);
     const endOfDay = new Date(date);
-    endOfDay.setHours(23, 59, 59, 999);
+    endOfDay.setDate(endOfDay.getDate() + 1);
     
-    dateFilter['handled_by.updated_at'] = {
+    query['handled_by.updated_at'] = {
       $gte: startOfDay,
-      $lte: endOfDay
+      $lt: endOfDay
     };
-  }
-  // Date range filter
-  else if (startDate || endDate) {
-    dateFilter['handled_by.updated_at'] = {};
+  } else if (startDate || endDate) {
+    query['handled_by.updated_at'] = {};
+    
     if (startDate) {
-      const start = new Date(startDate);
-      start.setHours(0, 0, 0, 0);
-      dateFilter['handled_by.updated_at'].$gte = start;
+      query['handled_by.updated_at'].$gte = new Date(startDate);
     }
+    
     if (endDate) {
-      const end = new Date(endDate);
-      end.setHours(23, 59, 59, 999);
-      dateFilter['handled_by.updated_at'].$lte = end;
+      query['handled_by.updated_at'].$lte = new Date(endDate);
     }
   }
   
